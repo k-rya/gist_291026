@@ -1,0 +1,426 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+from scipy.stats import norm
+
+
+N = 50
+K = 2.0
+K_1 = 1.0
+
+omega = norm.rvs(loc=0, scale=1, size=N)
+
+
+theta0 = np.random.uniform(0, 2*np.pi, N)
+
+
+def kuramoto(t, theta):
+    dtheta_dt = np.zeros_like(theta)
+    for i in range(N):
+
+        pair_term = np.sum(np.sin(theta - theta[i]))
+
+
+        triple_term = 0
+        for j in range(N):
+            for k in range(N):
+                triple_term += np.sin(theta[j] + theta[k] - 2*theta[i])
+
+        dtheta_dt[i] = omega[i] + K/N * pair_term + K_1/(N**2) * triple_term
+    return dtheta_dt
+
+t_span = [0, 50]
+sol = solve_ivp(kuramoto, t_span, theta0, method='RK45', t_eval=np.linspace(0, 50, 100000))
+
+
+plt.figure(figsize=(10, 6))
+
+
+plt.subplot(2, 1, 1)
+for i in range(N):
+    plt.plot(sol.t, np.sin(sol.y[i]), alpha=0.5)
+plt.title('Динамика фаз осцилляторов')
+plt.xlabel('Время')
+plt.ylabel('sin(θ)')
+
+
+plt.tight_layout()
+plt.show()
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import odeint
+from scipy.stats import norm
+import lyapynov
+
+
+N = 250
+T = 1000
+steps = 100000
+t = np.linspace(0, T, steps)
+dt = t[1] - t[0]
+
+
+np.random.seed(42)
+omega = norm.rvs(loc=0, scale=1, size=N)
+initial_phases = np.random.uniform(0, 2*np.pi, N)
+
+
+def kuramoto(theta, t, K, N, omega):
+    theta_i = theta[:, np.newaxis]
+    theta_j = theta[np.newaxis, :]
+    return omega + (K/N) * np.sum(np.sin(theta_j - theta_i), axis=1)
+
+
+def jacobian(theta, t, K, N, omega):
+    theta_i = theta[:, np.newaxis]
+    theta_j = theta[np.newaxis, :]
+    J = (K/N) * np.cos(theta_j - theta_i)
+    np.fill_diagonal(J, -np.sum(J, axis=1))
+    return J
+
+
+def order_parameter(theta):
+    return np.abs(np.mean(np.exp(1j * theta)))
+
+
+K_values = np.linspace(0, 5, 30)
+order_params = []
+lyapunovs = []
+
+for K in K_values:
+
+    sol = odeint(kuramoto, initial_phases, t, args=(K, N, omega))
+
+    steady_state = sol[-int(0.1*len(sol)):]
+    r = np.mean([order_parameter(phi) for phi in steady_state])
+    order_params.append(r)
+
+
+    system = lyapynov.ContinuousDS(
+        initial_phases,
+        0,
+        lambda x, t: kuramoto(x, t, K, N, omega),
+        lambda x, t: jacobian(x, t, K, N, omega),
+        dt
+    )
+
+
+    lyapynov.mLCE(system, n_forward=1000, n_compute=100, keep=False)
+
+
+    exponents, _ = lyapynov.LCE(system, p=N, n_forward=0, n_compute=1000, keep=True)
+    lyapunovs.append(np.max(exponents))
+
+
+plt.figure(figsize=(14, 6))
+
+
+plt.subplot(1, 2, 1)
+plt.plot(K_values, order_params, 'r-', lw=2)
+plt.xlabel('Коэффициент связи K', fontsize=12)
+plt.ylabel('Параметр порядка r', fontsize=12)
+plt.title('Зависимость параметра порядка от K', fontsize=14)
+plt.grid(True, alpha=0.5)
+plt.ylim(0, 1.05)
+
+
+plt.subplot(1, 2, 2)
+plt.plot(K_values, lyapunovs, 'b-', lw=2)
+plt.axhline(0, color='gray', ls='--')
+plt.xlabel('Коэффициент связи K', fontsize=12)
+plt.ylabel('λ (старший показатель Ляпунова)', fontsize=12)
+plt.title('Зависимость λ от K', fontsize=14)
+plt.grid(True, alpha=0.5)
+
+plt.tight_layout()
+plt.show()
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import odeint
+from scipy.stats import norm
+import lyapynov
+from tqdm import tqdm
+
+
+N = 10
+T = 1000
+steps = 100000
+t = np.linspace(0, T, steps)
+dt = t[1] - t[0]
+
+
+np.random.seed(42)
+omega = norm.rvs(loc=0, scale=1, size=N)
+initial_phases = np.random.uniform(0, 2*np.pi, N)
+
+
+def kuramoto_2nd_order(theta, t, K1, K2, N, omega):
+    theta_i = theta[:, np.newaxis]
+    theta_j = theta[np.newaxis, :]
+
+    coupling1 = np.sum(np.sin(theta_j - theta_i), axis=1)
+    coupling2 = np.sum(np.sin(2*(theta_j - theta_i)), axis=1)
+
+    return omega + (K1/N)*coupling1 + (K2/N**2)*coupling2
+
+
+def jacobian_2nd_order(theta, t, K1, K2, N, omega):
+    theta_i = theta[:, np.newaxis]
+    theta_j = theta[np.newaxis, :]
+
+    J1 = (K1/N) * np.cos(theta_j - theta_i)
+    J2 = (2*K2/N**2) * np.cos(2*(theta_j - theta_i))
+
+    J = J1 + J2
+    np.fill_diagonal(J, -np.sum(J, axis=1))
+    return J
+
+
+def order_parameter(theta):
+    return np.abs(np.mean(np.exp(1j * theta)))
+
+
+K1_grid = np.linspace(0, 5, 15)
+K2_grid = np.linspace(0, 5, 15)
+K1_mesh, K2_mesh = np.meshgrid(K1_grid, K2_grid)
+r_matrix = np.zeros_like(K1_mesh)
+lambda_matrix = np.zeros_like(K1_mesh)
+
+
+for i in tqdm(range(len(K1_grid)), desc='Расчет сетки'):
+    for j in range(len(K2_grid)):
+        K1 = K1_grid[i]
+        K2 = K2_grid[j]
+
+
+        sol = odeint(kuramoto_2nd_order, initial_phases, t, args=(K1, K2, N, omega))
+
+
+        steady_state = sol[-int(0.1*len(sol)):]
+        r = np.mean([order_parameter(phi) for phi in steady_state])
+        r_matrix[j, i] = r
+
+
+        system = lyapynov.ContinuousDS(
+            initial_phases,
+            0,
+            lambda x, t: kuramoto_2nd_order(x, t, K1, K2, N, omega),
+            lambda x, t: jacobian_2nd_order(x, t, K1, K2, N, omega),
+            dt
+        )
+        lyapynov.mLCE(system, n_forward=1000, n_compute=500, keep=False)
+        exponents, _ = lyapynov.LCE(system, p=N, n_forward=0, n_compute=1000, keep=True)
+        lambda_matrix[j, i] = np.max(exponents)
+
+
+plt.figure(figsize=(18, 6))
+
+
+plt.subplot(1, 2, 1)
+contour = plt.contourf(K1_mesh, K2_mesh, r_matrix, levels=20, cmap='viridis')
+plt.colorbar(contour, label='Параметр порядка r')
+plt.xlabel('K1', fontsize=12)
+plt.ylabel('K2', fontsize=12)
+plt.title('Параметр порядка в пространстве (K1, K2)', fontsize=14)
+plt.grid(True, alpha=0.3)
+
+plt.subplot(1, 2, 2)
+contour = plt.contourf(K1_mesh, K2_mesh, lambda_matrix, levels=20, cmap='plasma')
+plt.colorbar(contour, label='λ')
+plt.xlabel('K1', fontsize=12)
+plt.ylabel('K2', fontsize=12)
+plt.title('Ляпуновские показатели в пространстве (K1, K2)', fontsize=14)
+plt.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+
+fig, ax = plt.subplots(2, 2, figsize=(16, 12))
+
+
+
+K2_fixed = 1.3
+idx = np.argmin(np.abs(K2_grid - K2_fixed))
+ax[0,0].plot(K1_grid, r_matrix[idx,:], 'r-')
+ax[0,0].set_title(f'Зависимость r от K1 (K2={K2_fixed})')
+ax[0,0].set_xlabel('K1')
+ax[0,0].set_ylabel('r')
+ax[0,0].grid(True)
+
+ax[1,0].plot(K1_grid, lambda_matrix[idx,:], 'b-')
+ax[1,0].axhline(0, color='grey', ls='--')
+ax[1,0].set_title(f'Зависимость λ от K1 (K2={K2_fixed})')
+ax[1,0].set_xlabel('K1')
+ax[1,0].set_ylabel('λ')
+ax[1,0].grid(True)
+
+K1_fixed = 1.3
+idx = np.argmin(np.abs(K1_grid - K1_fixed))
+ax[0,1].plot(K2_grid, r_matrix[:,idx], 'g-')
+ax[0,1].set_title(f'Зависимость r от K2 (K1={K1_fixed})')
+ax[0,1].set_xlabel('K2')
+ax[0,1].set_ylabel('r')
+ax[0,1].grid(True)
+
+ax[1,1].plot(K2_grid, lambda_matrix[:,idx], 'm-')
+ax[1,1].axhline(0, color='grey', ls='--')
+ax[1,1].set_title(f'Зависимость λ от K2 (K1={K1_fixed})')
+ax[1,1].set_xlabel('K2')
+ax[1,1].set_ylabel('λ')
+ax[1,1].grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+fig, ax = plt.subplots(2, 2, figsize=(16, 12))
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import odeint
+from scipy.stats import norm
+import lyapynov
+from tqdm import tqdm
+from mpl_toolkits.mplot3d import Axes3D
+
+
+N = 10
+T = 1000
+steps = 100000
+t = np.linspace(0, T, steps)
+dt = t[1] - t[0]
+
+np.random.seed(42)
+omega = norm.rvs(loc=0, scale=1, size=N)
+initial_phases = np.random.uniform(0, 2*np.pi, N)
+
+def kuramoto_combined(theta, t, K1, K2, K3, N, omega):
+    theta_i = theta[:, np.newaxis]
+    theta_j = theta[np.newaxis, :]
+
+    coupling1 = np.sum(np.sin(theta_j - theta_i), axis=1)
+    coupling2 = np.sum(np.sin(2*(theta_j - theta_i)), axis=1)
+    coupling3 = np.sum(np.sin(3*(theta_j - theta_i)), axis=1)
+
+    return omega + (K1/N)*coupling1 + (K2/N**2)*coupling2 + (K3/N**3)*coupling3
+
+def jacobian_combined(theta, t, K1, K2, K3, N, omega):
+    theta_i = theta[:, np.newaxis]
+    theta_j = theta[np.newaxis, :]
+
+    J1 = (K1/N) * np.cos(theta_j - theta_i)
+    J2 = (2*K2/N**2) * np.cos(2*(theta_j - theta_i))
+    J3 = (3*K3/N**3) * np.cos(3*(theta_j - theta_i))
+
+    J = J1 + J2 + J3
+    np.fill_diagonal(J, -np.sum(J, axis=1))
+    return J
+
+def calculate_grid(param1_range, param2_range, fixed_params, param_names):
+    param1_mesh, param2_mesh = np.meshgrid(param1_range, param2_range)
+    r_matrix = np.zeros_like(param1_mesh)
+    lambda_matrix = np.zeros_like(param1_mesh)
+
+    default_params = {'K1': 0.0, 'K2': 0.0, 'K3': 0.0}
+    params = {**default_params, **fixed_params}
+
+    for i in tqdm(range(len(param1_range)), desc=f'{param_names[0]}-{param_names[1]}'):
+        for j in range(len(param2_range)):
+
+            current_params = params.copy()
+            current_params[param_names[0]] = param1_range[i]
+            current_params[param_names[1]] = param2_range[j]
+
+            sol = odeint(kuramoto_combined, initial_phases, t,
+                         args=(current_params['K1'],
+                               current_params['K2'],
+                               current_params['K3'],
+                               N, omega))
+
+
+            steady_state = sol[-int(0.1*len(sol)):]
+            r = np.mean([np.abs(np.mean(np.exp(1j*phi))) for phi in steady_state])
+            r_matrix[j,i] = r
+
+
+            system = lyapynov.ContinuousDS(
+                initial_phases,
+                0,
+                lambda x, t: kuramoto_combined(x, t,
+                                               current_params['K1'],
+                                               current_params['K2'],
+                                               current_params['K3'],
+                                               N, omega),
+                lambda x, t: jacobian_combined(x, t,
+                                               current_params['K1'],
+                                               current_params['K2'],
+                                               current_params['K3'],
+                                               N, omega),
+                dt
+            )
+            lyapynov.mLCE(system, n_forward=1000, n_compute=500, keep=False)
+            exponents, _ = lyapynov.LCE(system, p=N, n_forward=0, n_compute=1000, keep=True)
+            lambda_matrix[j,i] = np.max(exponents)
+
+    return param1_mesh, param2_mesh, r_matrix, lambda_matrix
+
+grids_config = [
+    {
+        'param1_range': np.linspace(0, 4, 15),
+        'param2_range': np.linspace(0, 8, 15),
+        'fixed_params': {'K3': 0},
+        'param_names': ('K1', 'K2')
+    },
+    {
+        'param1_range': np.linspace(0, 4, 15),
+        'param2_range': np.linspace(0, 20, 15),
+        'fixed_params': {'K2': 0},
+        'param_names': ('K1', 'K3')
+    },
+    {
+        'param1_range': np.linspace(0, 8, 15),
+        'param2_range': np.linspace(0, 20, 15),
+        'fixed_params': {'K1': 0},
+        'param_names': ('K2', 'K3')
+    }
+]
+
+results = []
+for config in grids_config:
+    results.append(calculate_grid(**config))
+
+plt.figure(figsize=(25, 20))
+
+for idx, (config, (X, Y, r, lam)) in enumerate(zip(grids_config, results)):
+
+    plt.subplot(3, 4, idx*4+1)
+    contour = plt.contourf(X, Y, r, levels=20, cmap='viridis')
+    plt.colorbar(contour, label='r')
+    plt.xlabel(config['param_names'][0])
+    plt.ylabel(config['param_names'][1])
+    plt.title(f"r({config['param_names'][0]}, {config['param_names'][1]})")
+
+    plt.subplot(3, 4, idx*4+2)
+    contour = plt.contourf(X, Y, lam, levels=20, cmap='plasma')
+    plt.colorbar(contour, label='λ')
+    plt.xlabel(config['param_names'][0])
+    plt.ylabel(config['param_names'][1])
+    plt.title(f"λ({config['param_names'][0]}, {config['param_names'][1]})")
+
+
+    ax1 = plt.subplot(3, 4, idx*4+3, projection='3d')
+    ax1.plot_surface(X, Y, r, cmap='viridis')
+    ax1.set_xlabel(config['param_names'][0])
+    ax1.set_ylabel(config['param_names'][1])
+    ax1.set_zlabel('r')
+    plt.title(f"3D r({config['param_names'][0]}, {config['param_names'][1]})")
+
+    ax2 = plt.subplot(3, 4, idx*4+4, projection='3d')
+    ax2.plot_surface(X, Y, lam, cmap='plasma')
+    ax2.set_xlabel(config['param_names'][0])
+    ax2.set_ylabel(config['param_names'][1])
+    ax2.set_zlabel('λ')
+    plt.title(f"3D λ({config['param_names'][0]}, {config['param_names'][1]})")
+
+plt.tight_layout()
+plt.show()
